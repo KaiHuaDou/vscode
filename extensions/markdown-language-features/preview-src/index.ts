@@ -8,7 +8,6 @@ import { onceDocumentLoaded } from './events';
 import { createPosterForVsCode } from './messaging';
 import { getEditorLineNumberForPageOffset, scrollToRevealSourceLine, getLineElementForFragment } from './scroll-sync';
 import { SettingsManager, getData, getRawData } from './settings';
-import throttle = require('lodash.throttle');
 import morphdom from 'morphdom';
 import type { ToWebviewMessage } from '../types/previewMessaging';
 import { isOfScheme, Schemes } from '../src/util/schemes';
@@ -130,16 +129,34 @@ onceDocumentLoaded(() => {
 });
 
 const onUpdateView = (() => {
-	const doScroll = throttle((line: number) => {
+	let timeout: number | undefined;
+	let lastLine: number | undefined;
+
+	const doScroll = (line: number) => {
 		scrollDisabledCount += 1;
 		doAfterImagesLoaded(() => scrollToRevealSourceLine(line, documentVersion, settings));
-	}, 50);
+		timeout = undefined;
+	};
+
+	const throttledScroll = (line: number) => {
+		if (timeout === undefined) {
+			lastLine = line;
+			doScroll(line);
+			timeout = window.setTimeout(() => {
+				timeout = undefined;
+				if (lastLine !== undefined) {
+					doScroll(lastLine);
+				}
+			}, 50);
+		} else {
+			lastLine = line;
+		}
+	};
 
 	return (line: number) => {
 		if (!isNaN(line)) {
 			state.line = line;
-
-			doScroll(line);
+			throttledScroll(line);
 		}
 	};
 })();
@@ -367,18 +384,27 @@ document.addEventListener('click', event => {
 	}
 }, true);
 
-window.addEventListener('scroll', throttle(() => {
-	updateScrollProgress();
+window.addEventListener('scroll', (() => {
+	let timeout: number | undefined;
 
-	if (scrollDisabledCount > 0) {
-		scrollDisabledCount -= 1;
-	} else {
-		const line = getEditorLineNumberForPageOffset(window.scrollY, documentVersion);
-		if (typeof line === 'number' && !isNaN(line)) {
-			messaging.postMessage('revealLine', { line });
+	return () => {
+		if (timeout === undefined) {
+			timeout = window.setTimeout(() => {
+				timeout = undefined;
+				updateScrollProgress();
+
+				if (scrollDisabledCount > 0) {
+					scrollDisabledCount -= 1;
+				} else {
+					const line = getEditorLineNumberForPageOffset(window.scrollY, documentVersion);
+					if (typeof line === 'number' && !isNaN(line)) {
+						messaging.postMessage('revealLine', { line });
+					}
+				}
+			}, 50);
 		}
-	}
-}, 50));
+	};
+})());
 
 function updateScrollProgress() {
 	state.scrollProgress = window.scrollY / document.body.clientHeight;
